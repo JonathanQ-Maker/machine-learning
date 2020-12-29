@@ -8,7 +8,8 @@ class Activation(enum.Enum):
     Relu = 1
     LeakyRelu = 2
     Softmax = 3
-    Linear = 4
+    SoftmaxHead = 4
+    Linear = 5
 
 class Layer():
     def __init__(self, shape, type = Activation.LeakyRelu, weights = None, bias = None):
@@ -33,7 +34,7 @@ class Layer():
         if(bias != None):
             self.bias = bias
 
-    def forward(self, input):
+    def forward(self, input, heads = None):
         self.input = input
         if(self.type == Activation.LeakyRelu):
             return self.leaky_forward(input)
@@ -41,6 +42,8 @@ class Layer():
             return self.relu_forward(input)
         elif(self.type == Activation.Softmax):
             return self.softmax_forward(input)
+        elif(self.type == Activation.SoftmaxHead):
+            return self.softmax_head_forward(input, heads)
         elif(self.type == Activation.Linear):
             return self.linear_forward(input)
 
@@ -59,12 +62,29 @@ class Layer():
         self.output, self.softmax_sum = mh.duel_softmax(self.z_output, len(input.shape) - 1)
         return self.output
 
+    def softmax_head_forward(self, input, heads):
+        self.z_output = np.dot(input, self.weights) + self.bias
+        self._z_output = [self.z_output[head[0]:head[1]] for head in heads]
+        output = []
+        self.softmax_sum = []
+        for z_out in self._z_output:
+            _output, softmax_sum = mh.duel_softmax(z_out, len(input.shape) - 1)
+            output.append(_output)
+            self.softmax_sum.append(softmax_sum)
+        self.output = np.array(mh.reshape_2d21d(output))
+        self.d_output = output
+        return output
+
     def linear_forward(self, input):
         self.output = np.dot(input, self.weights) + self.bias
         return self.output
 
     def softmax_gradient(self):
         return (self.output / self.softmax_sum) * (np.exp(2 * self.z_output) / self.softmax_sum + 1)
+
+    def softmax_head_gradient(self):
+        g = [mh.softmax_gradient(self._z_output[i], self.d_output[i], self.softmax_sum[i]) for i in range(len(self._z_output))]
+        return mh.reshape_2d21d(g)
 
     def leaky_gradient(self):
         return np.piecewise(
@@ -88,16 +108,17 @@ class Layer():
             return self.leaky_gradient()
         if(self.type == Activation.Softmax):
             return self.softmax_gradient()
+        if(self.type == Activation.SoftmaxHead):
+            return self.softmax_head_gradient()
         if(self.type == Activation.Linear):
             return self.linear_gradient()
 
 
 
 class NeuralNetwork():
-    def __init__(self, layers = None, heads = None, step = 0.001, weight_clip = 0.5, bias_clip = 0.1):
+    def __init__(self, layers = None, step = 0.001, weight_clip = 0.5, bias_clip = 0.1):
         self.layers = layers
         self.step = step
-        self.heads = heads
         self.output = None
         self.weight_clip = weight_clip
         self.bias_clip = bias_clip
@@ -109,27 +130,22 @@ class NeuralNetwork():
         self.output_layer = self.layers[self.length - 1]
         self.input_layer = self.layers[0]
 
-    def forward(self, input):
+    def forward(self, input, heads = None):
         """
         Input shape: (# of input sets, # of inputs)
         Output shape: (# of input sets, # of outputs)
         """
         self.input = np.array(input)
-        if (self.heads == None):
-            for i in range(self.length - 1):
-                input = self.layers[i].forward(input)
+        for i in range(self.length - 1):
+            input = self.layers[i].forward(input)
+        if (heads is None):
             return self.output_layer.forward(input)
         else:
-            output = []
-            for i in range(self.length):
-                input = self.layers[i].forward(input)
-            for head in self.heads:
-                output.append(head.forward(input))
-            return output
+            return self.output_layer.softmax_head_forward(input, heads)
 
     def loss(self, target, output = None, linear = True):
         loss = 0
-        if(output == None):
+        if(output is None):
             if(linear):
                 loss = np.sum(np.abs(self.output_layer.output - target))
             else:
@@ -140,18 +156,6 @@ class NeuralNetwork():
             else:
                 loss = np.sum(np.square(output - target))
         return loss
-
-    def loss_heads(self, target, linear = True):
-        losses = [self.loss(target[i], self.heads[i].output, linear) for i in range(len(self.heads))]
-        return np.sum(losses)
-
-    def backprop_adv_head(self, prob, adv):
-        dEdo = [np.log(prob[i]) * adv[i] for i in range(len(self.heads))]
-        self.backprop_head(dEdo)
-
-    def backprop_target_head(self, head_targets):
-        dEdo = [self.heads[i].output - head_targets[i] for i in range(len(self.heads))]
-        self.backprop_head(dEdo)
 
     def backprop_advantage(self, adv, prob = None):
         if(prob == None):
@@ -165,32 +169,6 @@ class NeuralNetwork():
 
     def backprop_target_batch(self, target):
         self.backprop_batch(self.output_layer.output - target)
-
-    def backprop_head(self, dEdo):
-        """Target shape: (# of heads, specific head length)"""
-        dEdzout_arry = []
-        for i in range(len(self.heads)):
-            dEdzout = dEdo[i] * self.heads[i].gradient()
-            dEdzout = np.reshape(dEdzout, -1)
-            update = np.tile(self.output_layer.output,(self.heads[i].shape[1],1)).transpose() * dEdzout * self.step
-            self.heads[i].weights -= np.clip(update, -self.weight_clip, self.weight_clip)
-            self.heads[i].bias -= np.clip(np.sum(dEdzout) * self.step, -self.bias_clip, self.bias_clip)
-            dEdzout = np.sum(self.heads[i].weights * dEdzout, axis=1) * self.output_layer.gradient()
-            dEdzout = np.reshape(dEdzout, -1)
-            dEdzout_arry.append(dEdzout)
-        update = np.tile(self.layers[self.length - 2].output,(self.output_layer.shape[1],1)).transpose() * np.mean(dEdzout_arry, axis=0) * self.step
-        self.output_layer.weights -= np.clip(update, -self.weight_clip, self.weight_clip)
-        self.output_layer.bias -= np.clip(np.sum(dEdzout) * self.step, -self.bias_clip, self.bias_clip)
-        for i in range(self.length - 2, 0, -1):
-            dEdzout = np.sum(self.layers[i+1].weights * dEdzout, axis=1) * self.layers[i].gradient()
-            output = np.tile(self.layers[i-1].output,(self.layers[i].shape[1],1)).transpose()
-            update = output * dEdzout * self.step
-            self.layers[i].weights -= np.clip(update, -self.weight_clip, self.weight_clip)
-            self.layers[i].bias -= np.clip(np.sum(dEdzout) * self.step, -self.bias_clip, self.bias_clip)
-        dEdzout = np.sum(self.layers[1].weights * dEdzout, axis=1) * self.input_layer.gradient()
-        update = np.tile(self.input, (self.input_layer.shape[1],1)).transpose() * dEdzout * self.step
-        self.input_layer.weights -= np.clip(update, -self.weight_clip, self.weight_clip)
-        self.input_layer.bias -= np.clip(np.sum(dEdzout) * self.step, -self.bias_clip, self.bias_clip)
 
     def backprop(self, dEdo):
         """Target shape: (1, # of outputs)"""
@@ -242,21 +220,12 @@ class NeuralNetwork():
         print(f"Saving network as {name}...")
         data = {}
         layers = []
-        heads = []
         for layer in self.layers:
             layers.append({"shape":layer.shape, 
                            "type":layer.type, 
                            "weights":layer.weights.tolist(), 
                            "bias":layer.bias,
                            "activation_id":layer.type.value})
-        if(self.heads != None):
-            for head in self.heads:
-                heads.append({"shape":head.shape, 
-                               "type":head.type, 
-                               "weights":head.weights.tolist(), 
-                               "bias":head.bias,
-                               "activation_id":head.type.value})
-        data["heads"] = heads
         data["layers"] = layers
         data["options"] = {"step":self.step,
                            "weight_clip":self.weight_clip,
@@ -273,7 +242,6 @@ class NeuralNetwork():
         print(f"Loading Network from {location}...")
         data = {}
         layers = []
-        heads = []
         try:
             if(as_np):
                 data = np.load(location+".npy", allow_pickle=True).item()
@@ -286,15 +254,7 @@ class NeuralNetwork():
                                 type = Activation(data["layers"][i]["activation_id"]), 
                                 weights=data["layers"][i]["weights"], 
                                 bias=data["layers"][i]["bias"]))
-
-            for i in range(len(data["heads"])):
-                heads.append(Layer(shape=data["heads"][i]["shape"], 
-                                type = Activation(data["heads"][i]["activation_id"]), 
-                                weights=data["heads"][i]["weights"], 
-                                bias=data["heads"][i]["bias"]))
-
             self.__init__(layers = layers,
-                          heads = heads,
                           step = data["options"]["step"], 
                           weight_clip = data["options"]["weight_clip"],
                           bias_clip = data["options"]["bias_clip"])
@@ -303,7 +263,7 @@ class NeuralNetwork():
             print(f"Load file from {location} failed {e}")
 
 
-#nn = NeuralNetwork([Layer((21169, 25)), Layer((25,25)), Layer((25,25)), Layer((25,25)), Layer((25,25)), Layer((25,25)), Layer((25, 369), Activation.SoftmaxHead)], step=0.0001)
+#nn = NeuralNetwork([Layer((21189, 25)), Layer((25,25)), Layer((25,25)), Layer((25,25)), Layer((25,25)), Layer((25,25)), Layer((25, 369), Activation.SoftmaxHead)], step=0.0001)
 #nn.save("DR_actor")
 #nn = NeuralNetwork([Layer((21169, 25)), Layer((25,25)), Layer((25,25)), Layer((25,25)), Layer((25, 1), Activation.Linear)], step=0.0001)
 #nn.save("DR_critic")
