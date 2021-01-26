@@ -2,14 +2,13 @@ import numpy as np
 import enum
 import math_helper as mh
 import json
-
+import utilities as u
+import sys
 
 class Activation(enum.Enum):
     Relu = 1
     LeakyRelu = 2
-    Softmax = 3
-    SoftmaxHead = 4
-    Linear = 5
+    Linear = 3
 
 class Layer():
     def __init__(self, shape, type = Activation.LeakyRelu, weights = None, bias = None):
@@ -28,63 +27,35 @@ class Layer():
         if(weights == None):
             self.weights = np.random.standard_normal(self.shape) * np.sqrt(2 / self.shape[0])
         else:
-            self.weights = weights
+            self.weights = np.array(weights)
 
     def set_bias(self, bias = None):
         if(bias != None):
             self.bias = bias
 
-    def forward(self, input, heads = None):
+    def forward(self, input):
         self.input = input
         if(self.type == Activation.LeakyRelu):
             return self.leaky_forward(input)
         elif(self.type == Activation.Relu):
             return self.relu_forward(input)
-        elif(self.type == Activation.Softmax):
-            return self.softmax_forward(input)
-        elif(self.type == Activation.SoftmaxHead):
-            return self.softmax_head_forward(input, heads)
         elif(self.type == Activation.Linear):
             return self.linear_forward(input)
 
     def leaky_forward(self, input):
-        self.output = np.dot(input, self.weights) + self.bias
-        self.output = np.piecewise(self.output, [self.output > 0, self.output <= 0], [lambda a: a, lambda a: a * self.leaky_slope])
+        self.z_output = np.dot(input, self.weights) + self.bias
+        self.output = np.piecewise(self.z_output, [self.z_output > 0, self.z_output <= 0], [lambda a: a, lambda a: a * self.leaky_slope])
         return self.output
 
     def relu_forward(self, input):
-        self.output = np.dot(input, self.weights) + self.bias
-        self.output = mh.relu(self.output)
-        return self.output
-
-    def softmax_forward(self, input):
         self.z_output = np.dot(input, self.weights) + self.bias
-        self.output, self.softmax_sum = mh.duel_softmax(self.z_output, len(input.shape) - 1)
+        self.output = mh.relu(self.z_output)
         return self.output
-
-    def softmax_head_forward(self, input, heads):
-        self.z_output = np.dot(input, self.weights) + self.bias
-        self._z_output = [self.z_output[head[0]:head[1]] for head in heads]
-        output = []
-        self.softmax_sum = []
-        for z_out in self._z_output:
-            _output, softmax_sum = mh.duel_softmax(z_out, len(input.shape) - 1)
-            output.append(_output)
-            self.softmax_sum.append(softmax_sum)
-        self.output = np.array(mh.reshape_2d21d(output))
-        self.d_output = output
-        return output
 
     def linear_forward(self, input):
-        self.output = np.dot(input, self.weights) + self.bias
+        self.z_output = np.dot(input, self.weights) + self.bias
+        self.output = self.z_output
         return self.output
-
-    def softmax_gradient(self):
-        return (self.output / self.softmax_sum) * (np.exp(2 * self.z_output) / self.softmax_sum + 1)
-
-    def softmax_head_gradient(self):
-        g = [mh.softmax_gradient(self._z_output[i], self.d_output[i], self.softmax_sum[i]) for i in range(len(self._z_output))]
-        return mh.reshape_2d21d(g)
 
     def leaky_gradient(self):
         return np.piecewise(
@@ -106,22 +77,19 @@ class Layer():
             return self.relu_gradient()
         if(self.type == Activation.LeakyRelu):
             return self.leaky_gradient()
-        if(self.type == Activation.Softmax):
-            return self.softmax_gradient()
-        if(self.type == Activation.SoftmaxHead):
-            return self.softmax_head_gradient()
         if(self.type == Activation.Linear):
             return self.linear_gradient()
 
 
 
 class NeuralNetwork():
-    def __init__(self, layers = None, step = 0.001, weight_clip = 0.5, bias_clip = 0.1):
+    def __init__(self, layers = None, step = 0.001, weight_clip = 0.5, bias_clip = 0.1, reg_coefficient = 0):
         self.layers = layers
         self.step = step
         self.output = None
         self.weight_clip = weight_clip
         self.bias_clip = bias_clip
+        self.reg_coefficient = reg_coefficient
         if(layers != None):
             self.setup()
 
@@ -130,7 +98,19 @@ class NeuralNetwork():
         self.output_layer = self.layers[self.length - 1]
         self.input_layer = self.layers[0]
 
-    def forward(self, input, heads = None):
+    def l2norm(self):
+        sum = 0.0
+        for layer in self.layers:
+            sum += np.linalg.norm(layer.weights)
+        return sum
+
+    def get_reg(self):
+        sum = 0.0
+        for layer in self.layers:
+            sum += np.sum(layer.weights)
+        return sum * 0.008
+
+    def forward(self, input):
         """
         Input shape: (# of input sets, # of inputs)
         Output shape: (# of input sets, # of outputs)
@@ -138,10 +118,7 @@ class NeuralNetwork():
         self.input = np.array(input)
         for i in range(self.length - 1):
             input = self.layers[i].forward(input)
-        if (heads is None):
-            return self.output_layer.forward(input)
-        else:
-            return self.output_layer.softmax_head_forward(input, heads)
+        return self.output_layer.forward(input)
 
     def loss(self, target, output = None, linear = True):
         loss = 0
@@ -158,45 +135,50 @@ class NeuralNetwork():
         return loss
 
     def backprop_advantage(self, adv, prob = None):
-        if(prob == None):
-            self.backprop(np.log10(self.output_layer.output) * adv)
+        if(prob is None):
+            return self.backprop(np.log10(mh.softmax(self.output_layer.output)) * adv)
         else:
-            self.backprop(np.log10(prob) * adv)
+            return self.backprop(np.log10(prob) * adv)
 
     def backprop_target(self, target):
-        """Target shape: (1, # of outputs)"""
-        self.backprop(self.output_layer.output - target)
+        """Target shape: (# of outputs, )"""
+        return self.backprop(self.output_layer.output - target)
 
     def backprop_target_batch(self, target):
-        self.backprop_batch(self.output_layer.output - target)
+        return self.backprop_batch(self.output_layer.output - target)
 
     def backprop(self, dEdo):
-        """Target shape: (1, # of outputs)"""
+        """Target shape: (# of outputs, )"""
         #dEdo = self.output_layer.output - target
         dEdzout = dEdo * self.output_layer.gradient()
         dEdzout = np.reshape(dEdzout, -1)
         update = np.tile(self.layers[self.length - 2].output,(self.output_layer.shape[1],1)).transpose() * dEdzout * self.step
-        self.output_layer.weights -= np.clip(update, -self.weight_clip, self.weight_clip)
+        self.output_layer.weights -= np.clip(update, -self.weight_clip, self.weight_clip) 
+        self.output_layer.weights -= self.step * self.reg_coefficient * self.output_layer.weights
         self.output_layer.bias -= np.clip(np.sum(dEdzout) * self.step, -self.bias_clip, self.bias_clip)
         for i in range(self.length - 2, 0, -1):
             dEdzout = np.sum(self.layers[i+1].weights * dEdzout, axis=1) * self.layers[i].gradient()
             output = np.tile(self.layers[i-1].output,(self.layers[i].shape[1],1)).transpose()
             update = output * dEdzout * self.step
-            self.layers[i].weights -= np.clip(update, -self.weight_clip, self.weight_clip)
+            self.layers[i].weights -= np.clip(update, -self.weight_clip, self.weight_clip) + self.reg_coefficient * self.layers[i].weights
+            self.layers[i].weights -= self.step * self.reg_coefficient * self.layers[i].weights
             self.layers[i].bias -= np.clip(np.sum(dEdzout) * self.step, -self.bias_clip, self.bias_clip)
         dEdzout = np.sum(self.layers[1].weights * dEdzout, axis=1) * self.input_layer.gradient()
         update = np.tile(self.input, (self.input_layer.shape[1],1)).transpose() * dEdzout * self.step
-        self.input_layer.weights -= np.clip(update, -self.weight_clip, self.weight_clip)
+        self.input_layer.weights -= np.clip(update, -self.weight_clip, self.weight_clip) + self.reg_coefficient * self.input_layer.weights
+        self.input_layer.weights -= self.step * self.reg_coefficient * self.input_layer.weights
         self.input_layer.bias -= np.clip(np.sum(dEdzout) * self.step, -self.bias_clip, self.bias_clip)
+        dEdzout = np.sum(self.input_layer.weights * dEdzout, axis=1)
+        return dEdzout
 
     def backprop_batch(self, dEdo):
         """Target shape: (# of targets, # of outputs)"""
-        #dEdo = self.output_layer.output - target
         dEdzout = dEdo * self.output_layer.gradient()
         output = np.tile(self.layers[self.length - 2].output, (self.output_layer.shape[1], 1)) * np.reshape(dEdzout.T, (-1,1))
         update = np.reshape(output, (self.output_layer.shape[1], self.layers[self.length - 2].output.shape[0], self.layers[self.length - 2].output.shape[1]))
         update = np.mean(update, axis=1).transpose() * self.step
         self.output_layer.weights -= np.clip(update, -self.weight_clip, self.weight_clip)
+        self.output_layer.weights -= self.step * self.reg_coefficient * self.output_layer.weights
         self.output_layer.bias -= np.clip(np.sum(dEdzout) * self.step, -self.bias_clip, self.bias_clip)
         for i in range(self.length - 2, 0, -1):
             d = np.reshape(dEdzout, (-1,1)) * np.tile(self.layers[i+1].weights, dEdzout.shape[0]).transpose()
@@ -206,6 +188,7 @@ class NeuralNetwork():
             update = np.reshape(output, (self.layers[i].shape[1], self.layers[i - 1].output.shape[0], self.layers[i - 1].output.shape[1]))
             update = np.mean(update, axis=1).transpose() * self.step
             self.layers[i].weights -= np.clip(update, -self.weight_clip, self.weight_clip)
+            self.layers[i].weights -= self.step * self.reg_coefficient * self.layers[i].weights
             self.layers[i].bias -= np.clip(np.sum(dEdzout) * self.step, -self.bias_clip, self.bias_clip)
         d = np.reshape(dEdzout, (-1,1)) * np.tile(self.layers[1].weights, dEdzout.shape[0]).transpose()
         d = np.reshape(d, (dEdzout.shape[0], self.layers[1].shape[1], self.layers[1].shape[0]))
@@ -213,8 +196,13 @@ class NeuralNetwork():
         output =  np.tile(self.input, (self.input_layer.shape[1],1)) * np.reshape(dEdzout.T, (-1,1))
         update = np.reshape(output, (self.input_layer.shape[1], self.input.shape[0], self.input.shape[1]))
         update = np.mean(update, axis=1).transpose() * self.step
-        self.input_layer.weights -= np.clip(update, -self.weight_clip, self.weight_clip)
+        self.input_layer.weights -= np.clip(update + self.reg_coefficient * np.sum(self.input_layer.weights), -self.weight_clip, self.weight_clip)
+        self.input_layer.weights -= self.step * self.reg_coefficient * self.input_layer.weights
         self.input_layer.bias -= np.clip(np.sum(dEdzout) * self.step, -self.bias_clip, self.bias_clip)
+        d = np.reshape(dEdzout, (-1,1)) * np.tile(self.input_layer.weights, dEdzout.shape[0]).transpose()
+        d = np.reshape(d, (dEdzout.shape[0], self.input_layer.shape[1], self.input_layer.shape[0]))
+        dEdzout = np.sum(d, axis=1)
+        return dEdzout
 
     def save(self, name="Network", as_np = True):
         print(f"Saving network as {name}...")
@@ -229,7 +217,8 @@ class NeuralNetwork():
         data["layers"] = layers
         data["options"] = {"step":self.step,
                            "weight_clip":self.weight_clip,
-                           "bias_clip":self.bias_clip}
+                           "bias_clip":self.bias_clip,
+                           "reg_coefficient":self.reg_coefficient}
         if(as_np):
             np.save(name, data)
         else:
@@ -248,7 +237,6 @@ class NeuralNetwork():
             else:
                 with open(location+".json","r") as f:
                     data = json.load(f)
-                    print(isinstance(data, dict))
             for i in range(len(data["layers"])):
                 layers.append(Layer(shape=data["layers"][i]["shape"], 
                                 type = Activation(data["layers"][i]["activation_id"]), 
@@ -257,13 +245,40 @@ class NeuralNetwork():
             self.__init__(layers = layers,
                           step = data["options"]["step"], 
                           weight_clip = data["options"]["weight_clip"],
-                          bias_clip = data["options"]["bias_clip"])
+                          bias_clip = data["options"]["bias_clip"],
+                          reg_coefficient = data["options"]["reg_coefficient"])
             print(f"Load success")
         except Exception as e:
             print(f"Load file from {location} failed {e}")
 
 
-#nn = NeuralNetwork([Layer((21189, 25)), Layer((25,25)), Layer((25,25)), Layer((25,25)), Layer((25,25)), Layer((25,25)), Layer((25, 369), Activation.SoftmaxHead)], step=0.0001)
-#nn.save("DR_actor")
-#nn = NeuralNetwork([Layer((21169, 25)), Layer((25,25)), Layer((25,25)), Layer((25,25)), Layer((25, 1), Activation.Linear)], step=0.0001)
-#nn.save("DR_critic")
+#nn = NeuralNetwork([Layer((21188, 100), Activation.Relu), 
+#                    Layer((100,100), Activation.Relu), 
+#                    Layer((100,100), Activation.Relu), 
+#                    Layer((100, 369), Activation.Linear)], step=0.0001)
+#nn.save("DR_actor_100")
+#nn = NeuralNetwork([Layer((21189, 50), Activation.Relu), 
+#                    Layer((50,50), Activation.Relu), 
+#                    Layer((50,50), Activation.Relu), 
+#                    Layer((50, 1), Activation.Linear)], step=0.0001)
+#nn.save("DR_critic_500")
+
+
+#if __name__=="__main__":
+#    nn = NeuralNetwork()
+#    nn.load("DR_actor")
+#    nn.step = 0.00003
+#    i = nn.forward(np.ones(21188))
+#    nn.backprop_target(np.ones(369) * 10)
+#    f = nn.forward(np.ones(21188))
+#    s = f - i
+#    print(np.linalg.norm(s))
+#    nn2 = NeuralNetwork()
+#    nn2.load("DR_actor_100")
+#    nn2.step = 0.00004
+#    i = nn2.forward(np.ones(21188))
+#    nn2.backprop_target(np.ones(369) * 10)
+#    f = nn2.forward(np.ones(21188))
+#    s = f - i
+#    print(np.linalg.norm(s))
+    

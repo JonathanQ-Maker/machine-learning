@@ -28,14 +28,14 @@ def duel_softmax(x, axis=None):
         s = np.sum(r)
     return r / s, s
 
-def stable_duel_softmax(x, axix=None):
+def stable_duel_softmax(x, axis=None):
     """Compute the softmax of vector x in a numerically stable way."""
-    exps = np.exp(x - np.max(x))
+    exp = np.exp(x - np.max(x))
     if (axis == 1):
-        s = np.reshape(np.sum(exps, axis=1), (-1, 1))
+        s = np.reshape(np.sum(exp, axis=1), (-1, 1))
     else:
         s = np.sum(exp)
-    return exps / s, s
+    return exp / s, s
 
 def normalize(arry):
     '''Accepts non numpy array'''
@@ -53,3 +53,9 @@ def reshape_2d21d(arry):
 
 def softmax_gradient(z_output, output, softmax_sum):
     return (output / softmax_sum) * (np.exp(2 * z_output) / softmax_sum + 1)
+
+def vector_split(vec, ranges):
+    r = []
+    for range in ranges:
+        r.append(vec[range[0]:range[1]])
+    return r
