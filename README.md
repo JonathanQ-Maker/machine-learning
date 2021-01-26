@@ -1,9 +1,16 @@
 # Jonathan's basic Machine Learning API
 
 ## About
+
+### Motivation
+
+Jonathan Q wanted to get into the world of machine learning. He had a choice, use the prebuilt and much more advanced machine learning libraries out there like a black box. Or learn everything first hand from the mathmatical theory to the challenges. Jonathan decided on the latter and this was the launch pad that he used to go on to learn the more advanced subset of machine learning such as reinforcement learning.
+### Advantages
 - Light weight
 - Networks saves as numpy files
 - Built from scratch with numpy
+- Network dfault output is centered around 0
+- Stable
 
 ## How to use?
 ### Step 1: Specify Neural Network Dimensions.
@@ -13,7 +20,8 @@ Example network with 3 layers:\
 Layer one, 5 input, 10 output\
 Layer two, 10 input, 5 output\
 Layer three, 5 input, 1 output
-```
+```Python
+#Specifying network layer dimensions
 layers = [Layer((5, 10)), Layer((10, 5)), Layer((5, 1))]
 ```
 
@@ -22,7 +30,8 @@ layers = [Layer((5, 10)), Layer((10, 5)), Layer((5, 1))]
 Simply instantiate the ```NeuralNetwork()``` object with specified network dimensions from step 1.
 
 Example:
-```
+```Python
+#Initializing nework
 nn = NeuralNetwork(layers)
 ```
 
@@ -45,8 +54,8 @@ To save your network simply use ```nn.save("MyNetwork")``` and a file named "MyN
 **Note: ```nn``` has to have ```NeuralNetwork()``` instaniated for ```nn.load()```**
 
 Example:
-```
-#Saving network from net
+```Python
+#Saving network from net as MyNetwork
 net = NeuralNetwork([Layer((1,5)), Layer((5, 5)), Layer((5, 1))])
 net.save("MyNetwork")
 
