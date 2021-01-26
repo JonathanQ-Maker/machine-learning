@@ -12,23 +12,23 @@ Start by defining the dimensions of the layers within your network as an list of
 Example network with 3 layers:\
 Layer one, 5 input, 10 output\
 Layer two, 10 input, 5 output\
-Layer three, 5 input, 1 output\
+Layer three, 5 input, 1 output
 ```
 layers = [Layer((5, 10)), Layer((10, 5)), Layer((5, 1))]
 ```
 
 
 ### Step 2: Create The Actual Network Object.
-Simply instantiate the NeuralNetwork object with specified network dimensions from step 1.
+Simply instantiate the ```NeuralNetwork()``` object with specified network dimensions from step 1.
 
-Example:\
+Example:
 ```
 nn = NeuralNetwork(layers)
 ```
 
 **Note: Each layer is by default
 
-### Step 3: Train the Neural netwrok.
+### Step 3: Train the Neural netwrok.**
 To train the neural network, it needs to be fed both the input and target output.
 
 To feed the neural network simply use ```nn.forward(input)``` this function will also return the output of the **whole network**.
